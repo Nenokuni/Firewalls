@@ -25,9 +25,20 @@ namespace BlockAsia
         /// </summary>
         private void OnExecute()
         {
-            // 処理開始
-            requiredConfirmation();
-            Console.WriteLine("Hello,World");
+            try{
+                // 処理開始
+                requiredConfirmation();
+                #if DEBUG
+                    Console.WriteLine($"ClientdId is {ClientId}");
+                    Console.WriteLine($"Secret is {Secret}");
+                    Console.WriteLine($"ProjectId is {ProjectId}");
+                    Console.WriteLine($"FilePath is {FilePath}");
+                #endif
+            }catch(ArgumentException error){
+                Console.WriteLine(error);
+            }catch(Exception error){
+                Console.WriteLine(error);
+            }
         }
 
         /// <summary>
@@ -35,6 +46,10 @@ namespace BlockAsia
         /// </summary>
         private void requiredConfirmation()
         {
+            if(String.IsNullOrEmpty(ClientId)) throw new ArgumentException(String.Format("--client-id is required."));
+            if(String.IsNullOrEmpty(Secret)) throw new ArgumentException(String.Format("--secret is required."));
+            if(String.IsNullOrEmpty(ProjectId)) throw new ArgumentException(String.Format("--project-id is required."));
+            if(String.IsNullOrEmpty(FilePath)) throw new ArgumentException(String.Format("--file-path is required."));
         }
 
     }
