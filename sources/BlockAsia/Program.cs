@@ -1,15 +1,19 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.ComponentModel.DataAnnotations;
 using McMaster.Extensions.CommandLineUtils;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Compute.v1;
 using Google.Apis.Services;
 using Google.Apis.Util.Store;
 using Newtonsoft.Json;
+
 
 using Data = Google.Apis.Compute.v1.Data;
 
@@ -38,11 +42,30 @@ namespace BlockAsia
 
     class Program
     {
-        [Option(Description = "Specify the Project id for the service account.")]
+        [Argument(0)]
+        [Required]
+        public String Execute { get; }
+
+        [Option(Description = "Specify the ipaddress list file path.")]
+        public String Filter { get; }
+
+        [Option(Description = "Specify the rule prifix name.")]
+        public String RulePrefix { get; }
+
+        [Option(Description = "Specify the project id for the service account.")]
+        [Required]
         public String ProjectId { get; }
 
         [Option(Description = "Specify the key file path for the service account.")]
+        [Required]
         public String KeyPath { get; }
+
+        /// <summary>
+        /// ロガー
+        /// </summary>
+        private ILogger Logger { get; set; }
+
+        private ProgramInfo ProgramInfomation { get; set; }
 
         // エントリポイントはコマンドラインパーサーを実行する
         static int Main(string[] args) => CommandLineApplication.Execute<Program>(args);
@@ -52,81 +75,97 @@ namespace BlockAsia
         /// </summary>
         private void OnExecute()
         {
-            try{
+            try
+            {
+                // ロガーのプロバイダーを設定
+                var loggerFactory = LoggerFactory.Create(builder =>
+                    {
+                        builder
+                            .AddConsole(console => {
+                                console.Format = ConsoleLoggerFormat.Default;
+                                console.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fffffff] ";
+                            });
+                    }
+                );
+
+                // ロガーを生成
+                Logger = loggerFactory.CreateLogger<Program>();
+
                 // プログラム情報の取得
-                ProgramInfo info = new ProgramInfo();
-                // 処理開始
-                // requiredConfirmation();
+                ProgramInfomation = new ProgramInfo();
 
                 #if DEBUG
-                    Console.WriteLine($"Current directory is {info.CurrentDirectory}");
-                    Console.WriteLine($"Product name is {info.Product}");
-                    Console.WriteLine($"Execute path is {info.ExecutePath}");
-                    Console.WriteLine($"Version is {info.Version}");
+                Logger.LogInformation($"Current directory is {ProgramInfomation.CurrentDirectory}");
+                Logger.LogInformation($"Product name is {ProgramInfomation.Product}");
+                Logger.LogInformation($"Execute path is {ProgramInfomation.ExecutePath}");
+                Logger.LogInformation($"Version is {ProgramInfomation.Version}");
                 #endif
 
-                // APIクライアントの初期化
-                // BaseClientService.Initializer initializer = new BaseClientService.Initializer { 
-                //     HttpClientInitializer = GoogleCredential.FromFile($"{KeyPath}").CreateScoped(ComputeService.Scope.Compute),
-                //     ApplicationName = $"{info.Product}/{info.Version}"
-                // };
-
-                // ComputeServiceの初期化
-                // ComputeService computeService = new ComputeService(initializer);
-
-                // Project ID for this request.
-                string project = ProjectId;  // TODO: Update placeholder value.
-
-                // ブロックリストの読み込み
-                List<String> ipaddresses = new List<String>();
-                using (FileStream file = File.OpenRead(@".\krfilter2.txt"))
+                switch(Execute)
                 {
-                    using (StreamReader stream = new StreamReader(file, Encoding.GetEncoding("utf-8")))
-                    {
-                        // シークを移動させる
-                        // file.Seek(2, System.IO.SeekOrigin.Begin);
+                    case @"list":
+                        List();
+                        break;
+                    case @"create":
+                        Create();
+                        break;
+                    default:
+                        Console.WriteLine(@"Can't recognize the command.");
+                        break;
+                }
+            }
+            catch(Exception exception)
+            {
+                Logger.LogError(exception.ToString());
+            }
+        }
 
-                        while(stream.Peek() > -1)
-                        {
-                            ipaddresses.Add(stream.ReadLine());
-                        }
+        /// <summary>
+        /// プロジェクトに設定されたファイアウォールルール一覧を取得する
+        /// </summary>
+        private void List()
+        {
+            ComputeService computeService = GenerateComputeService(KeyPath);
+            FirewallsResource.ListRequest request = computeService.Firewalls.List(ProjectId);
 
-                    }
+            Data.FirewallList response;
+
+            do
+            {
+                // 非同期でリクエストを実行.
+                response = request.Execute();
+
+                // アイテムがなければ次のリクエストへ飛ばす
+                if (response.Items == null)
+                {
+                    continue;
                 }
 
-                ipaddresses.ForEach((ip) => {
-                    Console.WriteLine(ip);
-                });
-                // Console.WriteLine(ipaddresses.ToString());
-
-                /*
-                FirewallsResource.ListRequest request = computeService.Firewalls.List(project);
-
-                Data.FirewallList response;
-                do
+                // ファイアウォールルール一覧を表示する
+                foreach (Data.Firewall firewall in response.Items)
                 {
-                    // To execute asynchronously in an async method, replace `request.Execute()` as shown:
-                    response = request.Execute();
-                    // response = await request.ExecuteAsync();
+                    // 標準出力に一覧を出力
+                    Console.Out.WriteLine(JsonConvert.SerializeObject(firewall, Formatting.Indented));
+                }
 
-                    if (response.Items == null)
-                    {
-                        continue;
-                    }
-                    foreach (Data.Firewall firewall in response.Items)
-                    {
-                        // TODO: Change code below to process each `firewall` resource:
-                        Console.WriteLine(JsonConvert.SerializeObject(firewall));
-                    }
-                    request.PageToken = response.NextPageToken;
-                } while (response.NextPageToken != null);
-                */
+            } while( response.NextPageToken != null );
+        }
 
-            }catch(ArgumentException error){
-                Console.WriteLine(error);
-            }catch(Exception error){
-                Console.WriteLine(error);
-            }
+        /// <summary>
+        /// ブロックするIPアドレスのファイアウォールルールを一括して作成する
+        /// </summary>
+        private void Create()
+        {
+            // コマンド実行に必要な引数確認
+            requiredConfirmation();
+
+            Console.WriteLine("hello, world.");
+            /*
+            IpAddresses(Filter).ForEach((ip) =>
+            {
+                Console.WriteLine(ip);
+            });
+            */
         }
 
         /// <summary>
@@ -134,8 +173,51 @@ namespace BlockAsia
         /// </summary>
         private void requiredConfirmation()
         {
-            if(String.IsNullOrEmpty(ProjectId)) throw new ArgumentException(String.Format("--project-id is required."));
-            if(String.IsNullOrEmpty(KeyPath)) throw new ArgumentException(String.Format("--key-path is required."));
+            if(String.IsNullOrEmpty(Filter)) throw new ArgumentException(String.Format("--filter is required."));
+            if(String.IsNullOrEmpty(RulePrefix)) throw new ArgumentException(String.Format("--rule-prefix is required."));
+        }
+
+        /// <summary>
+        /// IPアドレス一覧を返却する
+        /// </summary>
+        private List<String> IpAddresses(String path)
+        {
+            List<String> ipaddresses = new List<String>();
+
+            using (FileStream file = File.OpenRead(path))
+            {
+                using (StreamReader stream = new StreamReader(file, Encoding.GetEncoding("utf-8")))
+                {
+                    while(stream.Peek() > -1)
+                    {
+                        String line = stream.ReadLine();
+                        // 先頭文字が数値の行のみリストに追加する
+                        if(System.Text.RegularExpressions.Regex.IsMatch(line, @"^[0-9]+"))
+                        {
+                            ipaddresses.Add(line);
+                        }
+                    }
+                }
+            }
+
+            return ipaddresses;
+        }
+
+        /// <summary>
+        /// ComputeServiceクライアントを返却する
+        /// </summary>
+        private ComputeService GenerateComputeService(String key)
+        {
+            // APIクライアントの初期化
+            BaseClientService.Initializer initializer = new BaseClientService.Initializer
+            { 
+                HttpClientInitializer = GoogleCredential.FromFile($"{key}").CreateScoped(ComputeService.Scope.Compute),
+                ApplicationName = $"{ProgramInfomation.Product}/{ProgramInfomation.Version}"
+            };
+
+            // ComputeServiceの初期化
+            ComputeService computeService = new ComputeService(initializer);
+            return computeService;
         }
     }
 }
