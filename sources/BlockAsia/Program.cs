@@ -52,6 +52,9 @@ namespace BlockAsia
         [Option(Description = "Specify the rule prifix name.")]
         public String RulePrefix { get; }
 
+        [Option(Description = "Specify the asia block rules count.")]
+        public String Count { get; }
+
         [Option(Description = "Specify the project id for the service account.")]
         [Required]
         public String ProjectId { get; }
@@ -109,6 +112,9 @@ namespace BlockAsia
                     case @"create":
                         Create();
                         break;
+                    case @"delete":
+                        Delete();
+                        break;
                     default:
                         Console.WriteLine(@"Can't recognize the command.");
                         break;
@@ -125,6 +131,7 @@ namespace BlockAsia
         /// </summary>
         private void List()
         {
+            // リクエストサービスの作成
             ComputeService computeService = GenerateComputeService(KeyPath);
             FirewallsResource.ListRequest request = computeService.Firewalls.List(ProjectId);
 
@@ -157,24 +164,77 @@ namespace BlockAsia
         private void Create()
         {
             // コマンド実行に必要な引数確認
-            requiredConfirmation();
+            CreateRequiredConfirmation();
 
-            Console.WriteLine("hello, world.");
-            /*
-            IpAddresses(Filter).ForEach((ip) =>
-            {
-                Console.WriteLine(ip);
-            });
-            */
+            // IPアドレス一覧を取得
+            List<String> addresses = IpAddresses(Filter);
+
+            // リクエストデータの入れ物を用意
+            Data.Firewall firewall = new Data.Firewall();
+
+            // リクエストデータを構築
+            // ルール名
+            firewall.Name = $"{RulePrefix}-001";
+
+            // すべて拒否
+            Data.Firewall.DeniedData deniedData = new Data.Firewall.DeniedData();
+            deniedData.IPProtocol = "all";
+            firewall.Denied = new List<Data.Firewall.DeniedData>(){ deniedData };
+
+            // プライオリティ
+            // 根本的にブロックするため最優先にする
+            firewall.Priority = 100;
+
+            // 対象のIPアドレス
+            firewall.SourceRanges = addresses;
+
+            // リクエストサービスの作成
+            ComputeService computeService = GenerateComputeService(KeyPath);
+            FirewallsResource.InsertRequest request = computeService.Firewalls.Insert(firewall, ProjectId);
+
+            // リクエスト送信
+            Data.Operation response = request.Execute();
+
+            // レスポンス確認
+            Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
         }
 
         /// <summary>
-        /// 引数必須確認
+        /// ブロックするIPアドレスのファイアウォールルールを一括して作成する
         /// </summary>
-        private void requiredConfirmation()
+        private void Delete()
+        {
+            DeleteRequiredConfirmation();
+
+            String ruleName = $"{RulePrefix}-{Count}";
+
+            // リクエストサービスの作成
+            ComputeService computeService = GenerateComputeService(KeyPath);
+            FirewallsResource.DeleteRequest request = computeService.Firewalls.Delete(ProjectId, ruleName);
+
+            // リクエスト送信
+            Data.Operation response = request.Execute();
+
+            // レスポンス確認
+            Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
+        }
+
+        /// <summary>
+        /// ルール作成コマンドの引数必須確認
+        /// </summary>
+        private void CreateRequiredConfirmation()
         {
             if(String.IsNullOrEmpty(Filter)) throw new ArgumentException(String.Format("--filter is required."));
             if(String.IsNullOrEmpty(RulePrefix)) throw new ArgumentException(String.Format("--rule-prefix is required."));
+        }
+
+        /// <summary>
+        /// ルール削除コマンドの引数必須確認
+        /// </summary>
+        private void DeleteRequiredConfirmation()
+        {
+            if(String.IsNullOrEmpty(RulePrefix)) throw new ArgumentException(String.Format("--rule-prefix is required."));
+            if(String.IsNullOrEmpty(Count)) throw new ArgumentException(String.Format("--count is required."));
         }
 
         /// <summary>

@@ -4,10 +4,28 @@
 
 Debugモードで実行する。
 ```
-dotnet run --configuration Debug -- -c <ClientId> -s <SecretKey> -p <ProjectId> -f <FilePath>
 ```
 
 Releaseモードで実行する。
 ```
-dotnet run --configuration Release -- -c <ClientId> -s <SecretKey> -p <ProjectId> -f <FilePath>
+```
+
+# 単一実行ファイルの生成
+
+Windows10 64bit Debug
+```
+# Debug
+dotnet publish -c Debug -r win10-x64 -p:PublishSingleFile=true
+
+# Release
+dotnet publish -c Release -r win10-x64 -p:PublishSingleFile=true
+```
+
+Linux 64bit Debug
+```
+# Debug
+dotnet publish -c Debug -r linux-x64 -p:PublishSingleFile=true
+
+# Release
+dotnet publish -c Release -r linux-x64 -p:PublishSingleFile=true
 ```
