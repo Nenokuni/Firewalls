@@ -2,8 +2,6 @@ using System;
 using System.IO;
 using System.Text;
 using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using System.ComponentModel.DataAnnotations;
 using McMaster.Extensions.CommandLineUtils;
 using Microsoft.Extensions.Logging;
@@ -11,9 +9,7 @@ using Microsoft.Extensions.Logging.Console;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Compute.v1;
 using Google.Apis.Services;
-using Google.Apis.Util.Store;
 using Newtonsoft.Json;
-
 
 using Data = Google.Apis.Compute.v1.Data;
 
@@ -56,31 +52,37 @@ namespace BlockAsia
         public String Count { get; }
 
         [Option(Description = "Specify the project id for the service account.")]
-        [Required]
         public String ProjectId { get; }
 
         [Option(Description = "Specify the key file path for the service account.")]
-        [Required]
         public String KeyPath { get; }
 
         /// <summary>
-        /// ロガー
+        /// Logger.
         /// </summary>
         private ILogger Logger { get; set; }
 
+        /// <summary>
+        /// Program information.
+        /// </summary>
         private ProgramInfo ProgramInfomation { get; set; }
 
-        // エントリポイントはコマンドラインパーサーを実行する
+        /// <summary>
+        /// Maximum number of IP addresses that can be added to the block list.
+        /// </summary>
+        private const int CAN_ADD_MAX_IPADDRESS_COUNT = 250;
+
+        // The entry point executes the command line parser.
         static int Main(string[] args) => CommandLineApplication.Execute<Program>(args);
 
         /// <summary>
-        /// メイン処理
+        /// Main process.
         /// </summary>
         private void OnExecute()
         {
             try
             {
-                // ロガーのプロバイダーを設定
+                // Set up a logger provider.
                 var loggerFactory = LoggerFactory.Create(builder =>
                     {
                         builder
@@ -91,18 +93,11 @@ namespace BlockAsia
                     }
                 );
 
-                // ロガーを生成
+                // Generate a logger.
                 Logger = loggerFactory.CreateLogger<Program>();
 
-                // プログラム情報の取得
+                // Obtaining program information.
                 ProgramInfomation = new ProgramInfo();
-
-                #if DEBUG
-                Logger.LogInformation($"Current directory is {ProgramInfomation.CurrentDirectory}");
-                Logger.LogInformation($"Product name is {ProgramInfomation.Product}");
-                Logger.LogInformation($"Execute path is {ProgramInfomation.ExecutePath}");
-                Logger.LogInformation($"Version is {ProgramInfomation.Version}");
-                #endif
 
                 switch(Execute)
                 {
@@ -115,8 +110,11 @@ namespace BlockAsia
                     case @"delete":
                         Delete();
                         break;
+                    case @"version":
+                        Console.Out.WriteLine($"Version is {ProgramInfomation.Version}");
+                        break;
                     default:
-                        Console.WriteLine(@"Can't recognize the command.");
+                        Logger.LogError(@"Can't recognize the command.");
                         break;
                 }
             }
@@ -127,11 +125,13 @@ namespace BlockAsia
         }
 
         /// <summary>
-        /// プロジェクトに設定されたファイアウォールルール一覧を取得する
+        /// Get the list of firewall rules set in the project.
         /// </summary>
         private void List()
         {
-            // リクエストサービスの作成
+            RequiredConfirmation();
+
+            // Creating a Request Service.
             ComputeService computeService = GenerateComputeService(KeyPath);
             FirewallsResource.ListRequest request = computeService.Firewalls.List(ProjectId);
 
@@ -139,19 +139,19 @@ namespace BlockAsia
 
             do
             {
-                // 非同期でリクエストを実行.
+                // Execute a request asynchronously.
                 response = request.Execute();
 
-                // アイテムがなければ次のリクエストへ飛ばす
+                // If there is no item, skip to the next request.
                 if (response.Items == null)
                 {
                     continue;
                 }
 
-                // ファイアウォールルール一覧を表示する
+                // Display the list of firewall rules.
                 foreach (Data.Firewall firewall in response.Items)
                 {
-                    // 標準出力に一覧を出力
+                    // Outputs a list to standard output.
                     Console.Out.WriteLine(JsonConvert.SerializeObject(firewall, Formatting.Indented));
                 }
 
@@ -159,68 +159,106 @@ namespace BlockAsia
         }
 
         /// <summary>
-        /// ブロックするIPアドレスのファイアウォールルールを一括して作成する
+        /// Create firewall rules for blocking IP addresses at once.
         /// </summary>
         private void Create()
         {
-            // コマンド実行に必要な引数確認
+            RequiredConfirmation();
             CreateRequiredConfirmation();
 
-            // IPアドレス一覧を取得
+            // Get a list of IP addresses.
             List<String> addresses = IpAddresses(Filter);
 
-            // リクエストデータの入れ物を用意
-            Data.Firewall firewall = new Data.Firewall();
+            int divide = addresses.Count / CAN_ADD_MAX_IPADDRESS_COUNT;
+            int remainder = addresses.Count % CAN_ADD_MAX_IPADDRESS_COUNT;
+            if(remainder > 0)
+            {
+                divide += 1;
+            }
 
-            // リクエストデータを構築
-            // ルール名
-            firewall.Name = $"{RulePrefix}-001";
-
-            // すべて拒否
-            Data.Firewall.DeniedData deniedData = new Data.Firewall.DeniedData();
-            deniedData.IPProtocol = "all";
-            firewall.Denied = new List<Data.Firewall.DeniedData>(){ deniedData };
-
-            // プライオリティ
-            // 根本的にブロックするため最優先にする
-            firewall.Priority = 100;
-
-            // 対象のIPアドレス
-            firewall.SourceRanges = addresses;
-
-            // リクエストサービスの作成
+            // Creating a Request Service.
             ComputeService computeService = GenerateComputeService(KeyPath);
-            FirewallsResource.InsertRequest request = computeService.Firewalls.Insert(firewall, ProjectId);
 
-            // リクエスト送信
-            Data.Operation response = request.Execute();
+            for(int i = 0; i < divide; i++)
+            {
+                // Prepare a container for the request data.
+                Data.Firewall firewall = new Data.Firewall();
 
-            // レスポンス確認
-            Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
+                // Build the request data.
+                // Rule Name.
+                firewall.Name = $"{RulePrefix}-{String.Format("{0:000}", (i+1))}";
+
+                // All rejected.
+                Data.Firewall.DeniedData deniedData = new Data.Firewall.DeniedData();
+                deniedData.IPProtocol = "all";
+                firewall.Denied = new List<Data.Firewall.DeniedData>(){ deniedData };
+
+                // Priority.
+                // It's almost a top priority to fundamentally block it.
+                firewall.Priority = 100;
+
+                int start = i * CAN_ADD_MAX_IPADDRESS_COUNT;
+                int end = (start + CAN_ADD_MAX_IPADDRESS_COUNT);
+
+                List<String> divIpaddresses = new List<String>();
+                for(int j = start; j < end; j++)
+                {
+                    if(j < addresses.Count)
+                    {
+                        divIpaddresses.Add(addresses[j]);
+                    }
+                }
+
+                // Target IP addresses.
+                firewall.SourceRanges = new List<string>(divIpaddresses);
+
+                // Create a resource.
+                FirewallsResource.InsertRequest request = computeService.Firewalls.Insert(firewall, ProjectId);
+
+                // Sending a request.
+                Data.Operation response = request.Execute();
+
+                // Standard output of the results.
+                Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
+            }
         }
 
         /// <summary>
-        /// ブロックするIPアドレスのファイアウォールルールを一括して作成する
+        /// Batch deletion of firewall rules for blocking IP addresses.
         /// </summary>
         private void Delete()
         {
+            RequiredConfirmation();
             DeleteRequiredConfirmation();
 
-            String ruleName = $"{RulePrefix}-{Count}";
-
-            // リクエストサービスの作成
+            // Creating a Request Service.
             ComputeService computeService = GenerateComputeService(KeyPath);
-            FirewallsResource.DeleteRequest request = computeService.Firewalls.Delete(ProjectId, ruleName);
 
-            // リクエスト送信
-            Data.Operation response = request.Execute();
+            for(int i = 1; i <= Int32.Parse(Count); i++){
+                String ruleName = $"{RulePrefix}-{String.Format("{0:000}", i)}";
 
-            // レスポンス確認
-            Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
+                // Create a resource.
+                FirewallsResource.DeleteRequest request = computeService.Firewalls.Delete(ProjectId, ruleName);
+
+                // Sending a request.
+                Data.Operation response = request.Execute();
+
+                // Standard output of the results.
+                Console.Out.WriteLine(JsonConvert.SerializeObject(response, Formatting.Indented));
+            }
         }
 
         /// <summary>
-        /// ルール作成コマンドの引数必須確認
+        /// Confirmation of Required Arguments for Common Commands.
+        /// </summary>
+        private void RequiredConfirmation()
+        {
+            if(String.IsNullOrEmpty(KeyPath)) throw new ArgumentException(String.Format("--key-path is required."));
+            if(String.IsNullOrEmpty(ProjectId)) throw new ArgumentException(String.Format("--project-id is required."));
+        }
+
+        /// <summary>
+        /// Confirmation of required arguments for the rule creation command.
         /// </summary>
         private void CreateRequiredConfirmation()
         {
@@ -229,7 +267,7 @@ namespace BlockAsia
         }
 
         /// <summary>
-        /// ルール削除コマンドの引数必須確認
+        /// Confirmation of required arguments of the rule deletion command.
         /// </summary>
         private void DeleteRequiredConfirmation()
         {
@@ -238,8 +276,12 @@ namespace BlockAsia
         }
 
         /// <summary>
-        /// IPアドレス一覧を返却する
+        /// Returning the IP address list.
         /// </summary>
+        /// <param name="path">Full path to the IP address list file to be filtered.</param>
+        /// <returns>
+        /// List of IP addresses.
+        /// </returns>
         private List<String> IpAddresses(String path)
         {
             List<String> ipaddresses = new List<String>();
@@ -251,7 +293,7 @@ namespace BlockAsia
                     while(stream.Peek() > -1)
                     {
                         String line = stream.ReadLine();
-                        // 先頭文字が数値の行のみリストに追加する
+                        // Add only lines whose first character is a number to the list.
                         if(System.Text.RegularExpressions.Regex.IsMatch(line, @"^[0-9]+"))
                         {
                             ipaddresses.Add(line);
@@ -264,18 +306,22 @@ namespace BlockAsia
         }
 
         /// <summary>
-        /// ComputeServiceクライアントを返却する
+        /// Returning the ComputeService Client.
         /// </summary>
+        /// <param name="key">Full path to an authentication key file.</param>
+        /// <returns>
+        /// Request Service.
+        /// </returns>
         private ComputeService GenerateComputeService(String key)
         {
-            // APIクライアントの初期化
+            // API client initialization.
             BaseClientService.Initializer initializer = new BaseClientService.Initializer
             { 
                 HttpClientInitializer = GoogleCredential.FromFile($"{key}").CreateScoped(ComputeService.Scope.Compute),
                 ApplicationName = $"{ProgramInfomation.Product}/{ProgramInfomation.Version}"
             };
 
-            // ComputeServiceの初期化
+            // Initialization of ComputeService.
             ComputeService computeService = new ComputeService(initializer);
             return computeService;
         }
