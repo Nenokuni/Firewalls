@@ -80,22 +80,22 @@ namespace BlockAsia
         /// </summary>
         private void OnExecute()
         {
+            // Set up a logger provider.
+            var loggerFactory = LoggerFactory.Create(builder =>
+                {
+                    builder
+                        .AddConsole(console => {
+                            console.Format = ConsoleLoggerFormat.Default;
+                            console.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fffffff] ";
+                        });
+                }
+            );
+
+            // Generate a logger.
+            Logger = loggerFactory.CreateLogger<Program>();
+
             try
             {
-                // Set up a logger provider.
-                var loggerFactory = LoggerFactory.Create(builder =>
-                    {
-                        builder
-                            .AddConsole(console => {
-                                console.Format = ConsoleLoggerFormat.Default;
-                                console.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fffffff] ";
-                            });
-                    }
-                );
-
-                // Generate a logger.
-                Logger = loggerFactory.CreateLogger<Program>();
-
                 // Obtaining program information.
                 ProgramInfomation = new ProgramInfo();
 
@@ -316,7 +316,7 @@ namespace BlockAsia
         {
             // API client initialization.
             BaseClientService.Initializer initializer = new BaseClientService.Initializer
-            { 
+            {
                 HttpClientInitializer = GoogleCredential.FromFile($"{key}").CreateScoped(ComputeService.Scope.Compute),
                 ApplicationName = $"{ProgramInfomation.Product}/{ProgramInfomation.Version}"
             };
